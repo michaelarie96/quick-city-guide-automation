@@ -1,0 +1,562 @@
+{
+  "name": "Travel Guide Automation System",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "authentication": "airtableTokenApi",
+        "baseId": {
+          "__rl": true,
+          "value": "[YOUR_AIRTABLE_BASE_ID]",
+          "mode": "id"
+        },
+        "tableId": {
+          "__rl": true,
+          "value": "[YOUR_AIRTABLE_TABLE_ID]",
+          "mode": "id"
+        },
+        "triggerField": "Last Modified",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.airtableTrigger",
+      "typeVersion": 1,
+      "position": [0, 100],
+      "id": "new-travel-request-trigger",
+      "name": "New Travel Request Trigger",
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "[AIRTABLE_CREDENTIAL_ID]",
+          "name": "Airtable account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condition-check-html",
+              "leftValue": "={{ $json.fields.HTML_Content }}",
+              "rightValue": "=",
+              "operator": {
+                "type": "string",
+                "operation": "notExists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [220, 100],
+      "id": "check-if-guide-exists",
+      "name": "Check if Guide Exists"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Give me 3 recommended attractions in {{$node['New Travel Request Trigger'].json.fields.City}} with descriptions AND their real coordinates. Return in JSON format with this structure: {\\\"attractions\\\": [{\\\"name\\\": \\\"attraction name\\\", \\\"description\\\": \\\"description\\\", \\\"latitude\\\": 40.7128, \\\"longitude\\\": -74.0060}]} IMPORTANT: Use actual latitude/longitude coordinates for each specific attraction in the requested city. The coordinates should be real and accurate for those locations.\"\n    }\n  ],\n  \"max_tokens\": 1500\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 100],
+      "id": "generate-attractions-coordinates",
+      "name": "Generate Attractions & Coordinates",
+      "credentials": {
+        "groqApi": {
+          "id": "[GROQ_CREDENTIAL_ID]",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://api.unsplash.com/search/photos?query={{$node['New Travel Request Trigger'].json.fields.City}}&per_page=3",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Client-ID [YOUR_UNSPLASH_ACCESS_KEY]"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 100],
+      "id": "fetch-city-images",
+      "name": "Fetch City Images"
+    },
+    {
+      "parameters": {
+        "jsCode": "const cityName = $node['New Travel Request Trigger'].json.fields.City;\nconst recordId = $node['New Travel Request Trigger'].json.id;\n\nconst groqResponse = $node['Generate Attractions & Coordinates'].json.choices[0].message.content;\nconst attractionsMatch = groqResponse.match(/```json\\n([\\s\\S]*?)\\n```/);\nconst attractionsData = JSON.parse(attractionsMatch[1]);\n\nconst images = $node['Fetch City Images'].json.results.slice(0, 3);\n\n// Generate webhook URLs - REPLACE WITH YOUR n8n INSTANCE URLs\nconst approveUrl = `https://[YOUR_N8N_INSTANCE].app.n8n.cloud/webhook/[APPROVE_WEBHOOK_ID]/approve/${recordId}`;\nconst rejectUrl = `https://[YOUR_N8N_INSTANCE].app.n8n.cloud/webhook/[REJECT_WEBHOOK_ID]/reject/${recordId}`;\n\n// MAPBOX WITH REAL PINPOINTS - REPLACE WITH YOUR MAPBOX TOKEN\nconst mapboxToken = '[YOUR_MAPBOX_ACCESS_TOKEN]';\n\n// Create pinpoint markers from attraction coordinates\nconst createPinpoints = (attractions) => {\n    return attractions.map((attraction, index) => {\n        const number = index + 1;\n        const colors = ['ff0000', '00ff00', '0000ff']; // Red, Green, Blue\n        const color = colors[index] || 'ff0000';\n        \n        // pin-s-NUMBER+COLOR(longitude,latitude)\n        return `pin-s-${number}+${color}(${attraction.longitude},${attraction.latitude})`;\n    }).join(',');\n};\n\n// Generate MapBox Static Map URL with real pinpoints\nlet mapImageUrl;\ntry {\n    if (attractionsData.attractions && attractionsData.attractions.length > 0 && attractionsData.attractions[0].latitude) {\n        // We have coordinates! Create real pinpoints\n        const pinpoints = createPinpoints(attractionsData.attractions);\n        mapImageUrl = `https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/${pinpoints}/auto/600x300@2x?access_token=${mapboxToken}`;\n    } else {\n        throw new Error('No coordinates available');\n    }\n} catch (error) {\n    // Fallback: Basic city map without pinpoints\n    const encodedCity = encodeURIComponent(cityName);\n    mapImageUrl = `https://api.mapbox.com/styles/v1/mapbox/streets-v11/static/auto/600x300@2x?access_token=${mapboxToken}`;\n}\n\n// Interactive map link\nfunction generateInteractiveMapUrl(attractions, cityName) {\n    if (!attractions || attractions.length === 0 || !attractions[0].latitude) {\n        return `https://www.google.com/maps/search/${encodeURIComponent(cityName)}`;\n    }\n    \n    const coordinates = attractions.map(attraction => \n        `${attraction.latitude},${attraction.longitude}`\n    ).join('/');\n    \n    return `https://www.google.com/maps/dir/${coordinates}`;\n}\n\nconst interactiveMapUrl = generateInteractiveMapUrl(attractionsData.attractions, cityName);\n\n// HTML Generation - Full email-compatible structure\nconst html = `\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>Travel Guide - ${cityName}</title>\n    <style>\n        * { margin: 0; padding: 0; box-sizing: border-box; }\n        body {\n            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;\n            line-height: 1.6;\n            background: #f8fafc;\n            color: #1a202c;\n        }\n        \n        .email-container {\n            max-width: 600px;\n            margin: 0 auto;\n            background: white;\n            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);\n        }\n        \n        .header {\n            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);\n            color: white;\n            text-align: center;\n            padding: 40px 20px;\n        }\n        .header h1 {\n            font-size: 2.5rem;\n            font-weight: 700;\n            margin-bottom: 8px;\n            text-shadow: 0 2px 4px rgba(0,0,0,0.3);\n        }\n        .header p {\n            font-size: 1.1rem;\n            opacity: 0.9;\n            font-weight: 300;\n        }\n        \n        /* Additional CSS styles for images, attractions, map, etc. */\n        /* Full CSS structure continues here... */\n        \n    </style>\n</head>\n<body>\n    <div class=\"email-container\">\n        <div class=\"header\">\n            <h1>🌟 ${cityName} Travel Guide</h1>\n            <p>Discover the best attractions and experiences</p>\n        </div>\n\n        <div class=\"images-section\">\n            <div class=\"images-grid\">\n                ${images.map((img, index) => `\n                    <div class=\"image-card\">\n                        <img src=\"${img.urls.regular}\" alt=\"${cityName} - Image ${index + 1}\">\n                        <div class=\"image-credit\">\n                            Photo by ${img.user.name} on Unsplash\n                        </div>\n                    </div>\n                `).join('')}\n            </div>\n        </div>\n\n        <div class=\"attractions-section\">\n            <h2 class=\"section-title\">🎯 Top Attractions</h2>\n            ${attractionsData.attractions.map((attraction, index) => `\n                <div class=\"attraction\">\n                    <div class=\"attraction-number\">${index + 1}</div>\n                    <h3>${attraction.name}</h3>\n                    <p>${attraction.description}</p>\n                </div>\n            `).join('')}\n        </div>\n\n        <div class=\"map-section\">\n            <h2 class=\"section-title\">🗺️ Attractions Map</h2>\n            <div class=\"map-container\">\n                <img src=\"${mapImageUrl}\" alt=\"${cityName} Attractions Map\" class=\"map-image\">\n                <div class=\"map-overlay\">\n                    <h4>📍 ${cityName}</h4>\n                    <p>3 attractions marked</p>\n                </div>\n            </div>\n            \n            <div class=\"map-legend\">\n                <h4 style=\"margin-bottom: 12px; color: #2d3748;\">Map Legend:</h4>\n                ${attractionsData.attractions.map((attraction, index) => `\n                    <div class=\"legend-item\">\n                        <div class=\"legend-pin pin-${index + 1}\">${index + 1}</div>\n                        <span>${attraction.name}</span>\n                    </div>\n                `).join('')}\n            </div>\n            \n            <div style=\"text-align: center;\">\n                <a href=\"${interactiveMapUrl}\" class=\"map-link\" target=\"_blank\">\n                    🌍 View Interactive Map\n                </a>\n            </div>\n        </div>\n\n        <div class=\"action-section\">\n            <h2 class=\"action-title\">✨ How does this look?</h2>\n            <p class=\"action-subtitle\">Please review your travel guide and let us know if you'd like to approve it or make any changes.</p>\n            \n            <div class=\"main-buttons\">\n                <a href=\"${approveUrl}\" class=\"btn btn-approve\">\n                    ✅ Approve & Save\n                </a>\n            </div>\n            \n            <div class=\"feedback-section\">\n                <h3 class=\"feedback-title\">💬 Need Changes? Tell us what to improve:</h3>\n                <form method=\"POST\" action=\"${rejectUrl}\" class=\"feedback-form\">\n                    <textarea \n                        name=\"feedback\" \n                        placeholder=\"What would you like us to change?&#10;&#10;• Different attractions or locations&#10;• Better map positioning&#10;• Change colors/design&#10;• Add specific recommendations&#10;• etc...\"\n                        required></textarea>\n                    <button type=\"submit\" class=\"btn btn-submit\">\n                        🔄 Submit & Improve\n                    </button>\n                </form>\n            </div>\n        </div>\n\n        <div class=\"footer\">\n            <p>Generated with ❤️ by Travel Guide Automation | ${new Date().toLocaleDateString()}</p>\n        </div>\n    </div>\n</body>\n</html>\n`;\n\nreturn [{\n    json: {\n        html: html,\n        city: cityName,\n        recordId: recordId,\n        attractions: attractionsData.attractions,\n        images_count: images.length,\n        map_url: mapImageUrl,\n        has_coordinates: attractionsData.attractions && attractionsData.attractions[0] && attractionsData.attractions[0].latitude ? true : false\n    }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 100],
+      "id": "build-html-travel-guide",
+      "name": "Build HTML Travel Guide"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{$node['New Travel Request Trigger'].json.fields.Email}}",
+        "subject": "=Your Travel Guide for {{$node['New Travel Request Trigger'].json.fields.City}} is Ready! ✈️",
+        "message": "={{$node['Build HTML Travel Guide'].json.html}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1100, 100],
+      "id": "send-initial-travel-guide",
+      "name": "Send Initial Travel Guide",
+      "webhookId": "[GMAIL_WEBHOOK_ID]",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "[GMAIL_CREDENTIAL_ID]",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "[YOUR_AIRTABLE_BASE_ID]",
+          "mode": "list",
+          "cachedResultName": "Travel Guide Automation",
+          "cachedResultUrl": "https://airtable.com/[YOUR_BASE_ID]"
+        },
+        "table": {
+          "__rl": true,
+          "value": "[YOUR_AIRTABLE_TABLE_ID]",
+          "mode": "list",
+          "cachedResultName": "Requests",
+          "cachedResultUrl": "https://airtable.com/[YOUR_BASE_ID]/[YOUR_TABLE_ID]"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{$node['New Travel Request Trigger'].json.id}}",
+            "HTML_Content": "={{$node['Build HTML Travel Guide'].json.html}}"
+          },
+          "matchingColumns": ["id"],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "HTML_Content",
+              "displayName": "HTML_Content",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1300, 100],
+      "id": "save-html-to-database",
+      "name": "Save HTML to Database",
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "[AIRTABLE_CREDENTIAL_ID]",
+          "name": "Airtable account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "/approve/:recordId",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [1600, -60],
+      "id": "handle-guide-approval",
+      "name": "Handle Guide Approval",
+      "webhookId": "[APPROVE_WEBHOOK_ID]"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "/reject/:recordId",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [1600, 240],
+      "id": "handle-improvement-request",
+      "name": "Handle Improvement Request",
+      "webhookId": "[REJECT_WEBHOOK_ID]"
+    },
+    {
+      "parameters": {
+        "base": {
+          "__rl": true,
+          "value": "[YOUR_AIRTABLE_BASE_ID]",
+          "mode": "list",
+          "cachedResultName": "Travel Guide Automation",
+          "cachedResultUrl": "https://airtable.com/[YOUR_BASE_ID]"
+        },
+        "table": {
+          "__rl": true,
+          "value": "[YOUR_AIRTABLE_TABLE_ID]",
+          "mode": "list",
+          "cachedResultName": "Requests",
+          "cachedResultUrl": "https://airtable.com/[YOUR_BASE_ID]/[YOUR_TABLE_ID]"
+        },
+        "id": "={{$node['Handle Improvement Request'].json.params.recordId}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [1820, 240],
+      "id": "get-original-guide-data",
+      "name": "Get Original Guide Data",
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "[AIRTABLE_CREDENTIAL_ID]",
+          "name": "Airtable account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const feedback = $node['Handle Improvement Request'].json.body.feedback;\nconst htmlContent = $node['Get Original Guide Data'].json.HTML_Content;\nconst city = $node['Get Original Guide Data'].json.City;\nconst email = $node['Get Original Guide Data'].json.Email;\nconst recordId = $node['Handle Improvement Request'].json.params.recordId;\n\n// Build the request with email-appropriate improvements\nconst groqRequest = {\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a web designer specializing in email-compatible HTML. You improve travel guides based on user feedback while maintaining email client compatibility. CRITICAL: Always keep vertical layouts, preserve maps and interactive elements, and ensure mobile responsiveness.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": `IMPROVE this travel guide for ${city} based on user feedback.\n\nUSER FEEDBACK: \"${feedback.trim() || 'Make it look better and more appealing'}\"\n\nCURRENT HTML: ${htmlContent}\n\nIMPROVEMENT GUIDELINES:\n1. IF USER ASKS FOR SPECIFIC CHANGES - implement exactly what they request\n2. IF NO SPECIFIC FEEDBACK - make moderate visual improvements (colors, typography, spacing)\n3. IF USER REQUESTS DIFFERENT ATTRACTIONS:\n   - Generate 3 NEW attractions for ${city}\n   - MUST include real GPS coordinates (latitude/longitude) for each new attraction\n   - Update MapBox pinpoints with new coordinates\n   - Update map legend to match new attractions\n   - Keep same map styling and functionality\n4. ALWAYS PRESERVE:\n   - Vertical email-friendly layout (no horizontal layouts!)\n   - All map functionality and MapBox integration\n   - Interactive elements (approve button, feedback form)\n   - Mobile responsiveness\n   - All existing webhook URLs\n\nALLOWED CHANGES:\n✅ Color schemes and gradients\n✅ Typography (fonts, sizes, weights)\n✅ Card designs (shadows, borders, rounded corners)\n✅ Spacing and padding\n✅ Background colors/patterns\n✅ Button styles\n✅ Icon changes\n✅ Image presentation styles\n✅ Section visual styling\n\nFORBIDDEN CHANGES:\n❌ Horizontal/grid layouts that break in email\n❌ Removing or breaking the map section\n❌ Complex CSS that email clients don't support\n❌ Changing webhook URLs\n❌ Removing essential functionality\n❌ Flexbox or CSS Grid (use simple blocks/tables for email)\n\nESSENTIAL ELEMENTS TO PRESERVE:\n- City name: ${city}\n- All 3 attractions with descriptions (keep existing ones unless user specifically asks for different attractions)\n- IF keeping existing attractions: preserve all current coordinates and map data\n- IF changing attractions: generate NEW real coordinates for ${city} attractions\n- MapBox map with pinpoints (update coordinates if attractions change)\n- Map legend with colored pins (update names if attractions change)\n- Interactive map link (update coordinates if attractions change)\n- Approve button: https://[YOUR_N8N_INSTANCE].app.n8n.cloud/webhook/[APPROVE_WEBHOOK_ID]/approve/${recordId}\n- Feedback form POST: https://[YOUR_N8N_INSTANCE].app.n8n.cloud/webhook/[REJECT_WEBHOOK_ID]/reject/${recordId}\n- All existing image URLs\n\nEMAIL COMPATIBILITY REQUIREMENTS:\n- Use table-based layouts for complex structures\n- Inline CSS where possible\n- Avoid modern CSS features that break in Outlook\n- Keep vertical stacking for mobile\n- Test-friendly code structure\n\nRESPONSE FORMAT: Return ONLY the complete HTML code, no explanations or markdown blocks.`\n    }\n  ],\n  \"max_tokens\": 4000\n};\n\nreturn [{\n  json: groqRequest\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2060, 240],
+      "id": "prepare-improvement-request",
+      "name": "Prepare Improvement Request"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "JSON",
+        "body": "={{ $('Prepare Improvement Request').item.json }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2280, 240],
+      "id": "generate-improved-guide",
+      "name": "Generate Improved Guide",
+      "credentials": {
+        "groqApi": {
+          "id": "[GROQ_CREDENTIAL_ID]",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract HTML from Groq response\nconst groqResponse = $node['Generate Improved Guide'].json.choices[0].message.content;\n\n// Extract HTML from markdown code block\nconst htmlMatch = groqResponse.match(/```html\\n([\\s\\S]*?)\\n```/);\nconst cleanHTML = htmlMatch ? htmlMatch[1] : groqResponse;\n\nconsole.log('HTML extracted successfully');\n\nreturn [{\n  json: {\n    html: cleanHTML,\n    recordId: $node['Handle Improvement Request'].json.params.recordId,\n    city: $node['Get Original Guide Data'].json.City,\n    email: $node['Get Original Guide Data'].json.Email\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2500, 240],
+      "id": "extract-improved-html",
+      "name": "Extract Improved HTML"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Extract Improved HTML').item.json.email }}",
+        "subject": "=Your Updated {{ $('Extract Improved HTML').item.json.city }} Travel Guide is Ready! ✨",
+        "message": "={{ $('Extract Improved HTML').item.json.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2720, 240],
+      "id": "send-improved-travel-guide",
+      "name": "Send Improved Travel Guide",
+      "webhookId": "[GMAIL_WEBHOOK_ID_2]",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "[GMAIL_CREDENTIAL_ID]",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "value": "[YOUR_AIRTABLE_BASE_ID]",
+          "mode": "list",
+          "cachedResultName": "Travel Guide Automation",
+          "cachedResultUrl": "https://airtable.com/[YOUR_BASE_ID]"
+        },
+        "table": {
+          "__rl": true,
+          "value": "[YOUR_AIRTABLE_TABLE_ID]",
+          "mode": "list",
+          "cachedResultName": "Requests",
+          "cachedResultUrl": "https://airtable.com/[YOUR_BASE_ID]/[YOUR_TABLE_ID]"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{$node['Extract Improved HTML'].json.recordId}}",
+            "HTML_Content": "={{$node['Extract Improved HTML'].json.html}}"
+          },
+          "matchingColumns": ["id"],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true,
+              "removed": false
+            },
+            {
+              "id": "HTML_Content",
+              "displayName": "HTML_Content",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2920, 240],
+      "id": "save-improved-html",
+      "name": "Save Improved HTML",
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "[AIRTABLE_CREDENTIAL_ID]",
+          "name": "Airtable account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "New Travel Request Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check if Guide Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if Guide Exists": {
+      "main": [
+        [
+          {
+            "node": "Generate Attractions & Coordinates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Attractions & Coordinates": {
+      "main": [
+        [
+          {
+            "node": "Fetch City Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch City Images": {
+      "main": [
+        [
+          {
+            "node": "Build HTML Travel Guide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build HTML Travel Guide": {
+      "main": [
+        [
+          {
+            "node": "Send Initial Travel Guide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Initial Travel Guide": {
+      "main": [
+        [
+          {
+            "node": "Save HTML to Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Guide Approval": {
+      "main": [
+        []
+      ]
+    },
+    "Handle Improvement Request": {
+      "main": [
+        [
+          {
+            "node": "Get Original Guide Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Original Guide Data": {
+      "main": [
+        [
+          {
+            "node": "Prepare Improvement Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Improvement Request": {
+      "main": [
+        [
+          {
+            "node": "Generate Improved Guide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Improved Guide": {
+      "main": [
+        [
+          {
+            "node": "Extract Improved HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Improved HTML": {
+      "main": [
+        [
+          {
+            "node": "Send Improved Travel Guide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Improved Travel Guide": {
+      "main": [
+        [
+          {
+            "node": "Save Improved HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "[WORKFLOW_VERSION_ID]",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "[N8N_INSTANCE_ID]"
+  },
+  "id": "[WORKFLOW_ID]",
+  "tags": []
+}
