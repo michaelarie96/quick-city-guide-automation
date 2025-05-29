@@ -68,10 +68,12 @@ Simple Webhook Handler (HTML already saved)
 
 ### Installation
 1. Import `workflow.json` into your n8n instance
-2. Configure API credentials (see setup guide)
+2. Configure API credentials
 3. Create Airtable table with required schema
 4. Update webhook URLs in JavaScript nodes
 5. Activate workflow
+
+**📋 For detailed setup instructions, see [SETUP.md](SETUP.md)**
 
 ### Airtable Schema
 ```
@@ -85,16 +87,16 @@ Last Modified (Last modified time)
 ### Generated City Guide Components
 
 #### Header with photos
-![Header with photos](screenshots/header-with-photos.png)
+<img src="screenshots/header-with-photos.png" alt="Email Header" width="500">
 
 #### Attractions List
-![Attractions List](screenshots/attractions-list.png)
+<img src="screenshots/attractions-list.png" alt="Attractions List" width="500">
 
 #### Map with Pinpoints
-![Map with Pinpoints](screenshots/map-with-pinpoints.png)
+<img src="screenshots/map-with-pinpoints.png" alt="Map with Pinpoints" width="500">
 
 #### Approval System
-![Approval System](screenshots/approval-section.png)
+<img src="screenshots/approval-section.png" alt="Approval System" width="500">
 
 ## 🔧 Configuration
 
